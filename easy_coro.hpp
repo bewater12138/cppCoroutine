@@ -17,7 +17,7 @@
     存放 co_return 或 co_yield 的值时，以指针形式存储。
 
     若要扩展协程类，则应在自定义类型中，定义一个名为 promise_type 的类型，
-该 promise_type 类型应当继承自 BasicCoroutine::promise_type<> 类型。接
+该 promise_type 类型应当继承自 BasicCoroutine<>::promise_type 类型。接
 下来有两种选择：一、为自定义类型添加由 BasicCoroutine<> 进行转换的隐式转换
 函数（自定义类型中应当有相应的成员来存放 BasicCoroutine<> 中的协程句柄）；
 二、覆盖 get_return_object 方法，覆盖后的返回值应为自定义类型。准备工作完成
