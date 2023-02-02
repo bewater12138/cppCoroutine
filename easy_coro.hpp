@@ -44,9 +44,9 @@
 #define OVERRIDE_ON_RETURN_VOID virtual void OnReturn()override
 #define OVERRIDE_ON_RETURN virtual void OnReturn(const T_return_type& value)override
 #define OVERRIDE_ON_YIELD virtual void OnYield(const T_yield_type& value)override
-#define OVERRIDE_ON_GET_OBJ_FUN virtual void OnGetObject()override
-#define OVERRIDE_ON_INITIAL_FUN virtual void OnInitial()override
-#define OVERRIDE_ON_FINAL_FUN virtual void OnFinal()noexcept override
+#define OVERRIDE_ON_GET_OBJ virtual void OnGetObject()override
+#define OVERRIDE_ON_INITIAL virtual void OnInitial()override
+#define OVERRIDE_ON_FINAL virtual void OnFinal()noexcept override
 
 
 namespace MyCodes
