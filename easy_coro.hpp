@@ -1,6 +1,6 @@
 /*
     基于c++20新特性，协程所写的库，库中以类模板的方式封装了c++原生协程的具体
-实现，以供他人使用。
+实现，以供方便使用。
 
     协程类模板中有五个模板参数:
         Tco_return
@@ -9,7 +9,7 @@
         T_final_await
         T_yield_await
 
-        其中，前两个模板参数分别为协程的 return 类型和 yield 类型。
+        其中，前两个模板参数分别为协程的 co_return 类型和 co_yield 类型。
         后面三个模板参数则应满足一定约定（在本库中用 SatisfyAwait 约束），
     这三个模板参数用于判定在指定条件下是否要挂起协程。
         
@@ -24,16 +24,15 @@
 后，即可开始重写相应的虚方法了，所有虚方法的签名已在下面进行了宏定义，可以方
 便地重写。这些提供的虚方法会在相应时机被特定的方法调用，以实现特殊需求。
 
-    由于协程句柄需要手动释放，因此本库中根据共享指针的机制提供了共享协程句柄，
-以便程序自动管理协程的销毁。创建时通过 MakeSharedCoroHandle 函数创建,该函数
-的参数为创建协程的函数指针，且应无参数，若要使用有参数的协程创建函数，建议使
-用无捕获的 lambda 进行一次封装。库中没有为共享协程句柄提供偏特化，因此无法直接
-得到 return 和 yield 的值，而是应当用重载的 -> 运算符得到。
+    为了方便地管理协程句柄，本库中根据共享指针的机制提供了共享协程句柄，SharedCoroHandle
+类，以便程序自动管理协程的销毁。创建时建议通过 MakeSharedCoroHandle 函数创建。
 
 */
 #pragma once
 #if _MSVC_LANG > 201703L
 #include<coroutine>
+#include<type_traits>
+#include<malloc.h>
 
 #define _AWAIT std::suspend_always()
 #define _CONTINUE std::suspend_never()
@@ -47,6 +46,7 @@
 #define OVERRIDE_ON_GET_OBJ virtual void OnGetObject()override
 #define OVERRIDE_ON_INITIAL virtual void OnInitial()override
 #define OVERRIDE_ON_FINAL virtual void OnFinal()noexcept override
+#define OVERRIDE_ON_UNHANDLED_EXC virtual void OnUnhandledException()override
 
 
 namespace MyCodes
@@ -67,7 +67,7 @@ template<   class Tco_return,
 requires    SatisfyAwait<T_initial_await>&&
             SatisfyAwait<T_final_await>&&
             SatisfyAwait<T_yield_await>
-class BasicCoroutine;
+class BasicCoroutine;       //前置声明
 
 template<   class Tco_return,
         class Tco_yield,
@@ -75,64 +75,69 @@ template<   class Tco_return,
         class T_final_await,
         class T_yield_await>
 requires    SatisfyAwait<T_initial_await>&&
-            SatisfyAwait<T_final_await>&&
-            SatisfyAwait<T_yield_await>
+SatisfyAwait<T_final_await>&&
+SatisfyAwait<T_yield_await>
 struct promise_type_base
 {
-promise_type_base() {}
+    promise_type_base() {}
 
-using CoroType =
-    BasicCoroutine<Tco_return, Tco_yield, T_initial_await, T_final_await, T_yield_await>;
-        
-CoroType get_return_object()
-{
-    this->OnGetObject();
-    CoroType resault;
-    resault.handle = std::coroutine_handle<typename CoroType::promise_type>::
-        from_promise(*
-            (reinterpret_cast<typename CoroType::promise_type*>(this))
-        );
+    using CoroType =
+        BasicCoroutine<Tco_return, Tco_yield, T_initial_await, T_final_await, T_yield_await>;
 
-    return resault;
-}
+    CoroType get_return_object()
+    {
+        this->OnGetObject();
+        #pragma warning(disable:6255)
+        CoroType* coro_ptr = (CoroType*)_alloca(sizeof(CoroType));  //防止自动调用析构函数
+        #pragma warning(default:6255)
+        coro_ptr->m_handle = std::coroutine_handle<typename CoroType::promise_type>::
+            from_promise(*
+                (reinterpret_cast<typename CoroType::promise_type*>(this))
+            );
 
-T_initial_await initial_suspend()
-{
-    this->OnInitial();
-    return {};
-}
+        return *coro_ptr;
+    }
 
-T_final_await final_suspend()noexcept
-{
-    this->OnFinal();
-    return {};
-}
+    T_initial_await initial_suspend()
+    {
+        this->OnInitial();
+        return {};
+    }
 
-void unhandled_exception()
-{
-    this->OnUnhandledException();
-}
+    T_final_await final_suspend()noexcept
+    {
+        this->OnFinal();
+        return {};
+    }
 
-virtual void OnGetObject()
-{
+    void unhandled_exception()
+    {
+        this->OnUnhandledException();
+    }
 
-}
+    virtual void OnGetObject()
+    {
 
-virtual void OnInitial()
-{
+    }
 
-}
+    virtual void OnInitial()
+    {
 
-virtual void OnFinal()noexcept
-{
+    }
 
-}
+    virtual void OnFinal()noexcept
+    {
 
-virtual void OnUnhandledException()
-{
+    }
 
-}
+    virtual void OnUnhandledException()
+    {
+
+    }
 };
+
+template<class CoroutineType>
+class SharedCoroHandle;     //前置声明
 }
 
 namespace MyCodes
@@ -152,11 +157,11 @@ requires    SatisfyAwait<T_initial_await>&&
 class BasicCoroutine
 {
 public:
-
-using T_yield_type = Tco_yield;
-using T_return_type = Tco_return;
-
-struct promise_type : promise_type_base<Tco_return, Tco_yield, T_initial_await, T_final_await, T_yield_await>
+    
+    using T_yield_type = Tco_yield;
+    using T_return_type = Tco_return;
+    
+    struct promise_type : promise_type_base<Tco_return, Tco_yield, T_initial_await, T_final_await, T_yield_await>
 {
     using Base = promise_type;
 
@@ -213,44 +218,70 @@ private:
 
 };
 
-std::coroutine_handle<promise_type> handle;
+    using HandleType = std::coroutine_handle<promise_type>;
 
-~BasicCoroutine()
-{
+private:
+    friend class SharedCoroHandle<BasicCoroutine>;
+    friend struct promise_type_base<Tco_return, Tco_yield, T_initial_await, T_final_await, T_yield_await>;
+    HandleType m_handle;
 
-}
+public:
+    
+    ~BasicCoroutine()
+    {
+        this->destory();
+    }
+    
+    bool done()const
+    {
+        if (m_handle != nullptr)
+            return handle.done();
+        else
+            return true;
+    }
+    
+    void resume()const
+    {
+        if (m_handle != nullptr)
+            handle.resume();
+    }
+    
+    void destory()
+    {
+        if (m_handle != nullptr)
+        {
+            this->m_handle.destroy();
+            m_handle = nullptr;
+        }
+    }
+    
+    bool operator==(const BasicCoroutine& right)const
+    {
+        return this->handle == right.handle;
+    }
 
-bool done()const
-{
-    return handle.done();
-}
+    bool operator==(nullptr_t)const
+    {
+        return m_handle == nullptr;
+    }
 
-void resume()const
-{
-    handle.resume();
-}
-
-void destory()const
-{
-    this->handle.destroy();
-}
-
-bool operator==(const BasicCoroutine& right)const
-{
-    return this->handle == right.handle;
-}
-
-_declspec(property(get = getyield)) const T_yield_type* yield_value_ptr;
-const T_yield_type* getyield()const
-{
-    return this->handle.promise().yield_value_ptr;
-}
-
-_declspec(property(get = getreturn)) const T_return_type* return_value_ptr;
-const T_return_type* getreturn()const
-{
-    return this->handle.promise().return_value_ptr;
-}
+    _declspec(property(get = gethandle)) const HandleType& handle;
+    const HandleType& gethandle()const
+    {
+        return m_handle;
+    }
+    
+    _declspec(property(get = getyield)) const T_yield_type* yield_value_ptr;
+    const T_yield_type* getyield()const
+    {
+        return this->handle.promise().yield_value_ptr;
+    }
+    
+    _declspec(property(get = getreturn)) const T_return_type* return_value_ptr;
+    const T_return_type* getreturn()const
+    {
+        return this->handle.promise().return_value_ptr;
+    }
 
 };
 
@@ -259,54 +290,81 @@ const T_return_type* getreturn()const
 //模板特化,无co_yield,无co_return_value,有co_return_void
 template<class T_initial_await, class T_final_await,class T_yield_await>
 requires    SatisfyAwait<T_initial_await>&&
-            SatisfyAwait<T_final_await>&&
-            SatisfyAwait<T_yield_await>
-class BasicCoroutine<void, void, T_initial_await, T_final_await,T_yield_await>
+SatisfyAwait<T_final_await>&&
+SatisfyAwait<T_yield_await>
+class BasicCoroutine<void, void, T_initial_await, T_final_await, T_yield_await>
 {
 public:
-struct promise_type : promise_type_base<void, void, T_initial_await, T_final_await, T_yield_await>
-{
-    using Base = promise_type;
-
-    promise_type() {}
-
-    void return_void()
+    struct promise_type : promise_type_base<void, void, T_initial_await, T_final_await, T_yield_await>
     {
-        this->OnReturn();
+        using Base = promise_type;
+
+        promise_type() {}
+
+        void return_void()
+        {
+            this->OnReturn();
+        }
+
+        virtual void OnReturn()
+        {
+
+        }
+
+    };
+
+    using HandleType = std::coroutine_handle<promise_type>;
+
+private:
+    friend class SharedCoroHandle<BasicCoroutine>;
+    friend struct promise_type_base<void, void, T_initial_await, T_final_await, T_yield_await>;
+    HandleType m_handle;
+
+public:
+
+    ~BasicCoroutine()
+    {
+        this->destory();
     }
 
-    virtual void OnReturn()
+    bool done()const
     {
-                
+        if (m_handle != nullptr)
+            return handle.done();
+        else
+            return true;
     }
 
-};
+    void resume()const
+    {
+        if (m_handle != nullptr)
+            handle.resume();
+    }
 
-virtual ~BasicCoroutine()
-{
+    void destory()
+    {
+        if (m_handle != nullptr)
+        {
+            this->m_handle.destroy();
+            m_handle = nullptr;
+        }
+    }
 
-}
+    bool operator==(const BasicCoroutine& right)const
+    {
+        return this->handle == right.handle;
+    }
 
-bool done()const
-{
-    return handle.done();
-}
+    bool operator==(nullptr_t)const
+    {
+        return m_handle == nullptr;
+    }
 
-void resume()const
-{
-    handle.resume();
-}
-
-void destory()const
-{
-    this->handle.destroy();
-}
-bool operator==(const BasicCoroutine& right)const
-{
-    return this->handle == right.handle;
-}
-
-std::coroutine_handle<promise_type> handle;
+    _declspec(property(get = gethandle)) const HandleType& handle;
+    const HandleType& gethandle()const
+    {
+        return m_handle;
+    }
 
 };
 
@@ -315,95 +373,121 @@ std::coroutine_handle<promise_type> handle;
 //模板特化,无co_return,有return_void
 template<class Tco_yield, class T_initial_await, class T_final_await,class T_yield_await >
 requires    SatisfyAwait<T_initial_await>&&
-            SatisfyAwait<T_final_await>&&
-            SatisfyAwait<T_yield_await>
-class BasicCoroutine<void, Tco_yield, T_initial_await, T_final_await,T_yield_await>
+SatisfyAwait<T_final_await>&&
+SatisfyAwait<T_yield_await>
+class BasicCoroutine<void, Tco_yield, T_initial_await, T_final_await, T_yield_await>
 {
 public:
 
-using T_yield_type = Tco_yield;
+    using T_yield_type = Tco_yield;
 
-struct promise_type : promise_type_base<void, Tco_yield, T_initial_await, T_final_await, T_yield_await>
-{
-    using Base = promise_type;
-
-    promise_type() {}
-
-    ~promise_type()
+    struct promise_type : promise_type_base<void, Tco_yield, T_initial_await, T_final_await, T_yield_await>
     {
-        delete m_yield_value;
-    }
+        using Base = promise_type;
 
-    T_yield_await yield_value(const T_yield_type& value)
-    {
-        this->OnYield(value);
-        return {};
-    }
+        promise_type() {}
 
-    void return_void()
-    {
-        this->OnReturn();
-    }
-
-    virtual void OnYield(const T_yield_type& value)
-    {
-        if (m_yield_value)
+        ~promise_type()
         {
-            *m_yield_value = value;
+            delete m_yield_value;
         }
+
+        T_yield_await yield_value(const T_yield_type& value)
+        {
+            this->OnYield(value);
+            return {};
+        }
+
+        void return_void()
+        {
+            this->OnReturn();
+        }
+
+        virtual void OnYield(const T_yield_type& value)
+        {
+            if (m_yield_value)
+            {
+                *m_yield_value = value;
+            }
+            else
+            {
+                m_yield_value = new T_yield_type(value);
+            }
+        }
+
+        virtual void OnReturn()
+        {
+
+        }
+
+        _declspec(property(get = getyield)) const T_yield_type* yield_value_ptr;
+        const T_yield_type* getyield()const
+        {
+            return this->m_yield_value;
+        }
+
+    private:
+        T_yield_type* m_yield_value = nullptr;
+    };
+
+    using HandleType = std::coroutine_handle<promise_type>;
+
+private:
+    friend class SharedCoroHandle<BasicCoroutine>;
+    friend struct promise_type_base<void, Tco_yield, T_initial_await, T_final_await, T_yield_await>;
+    HandleType m_handle;
+
+public:
+
+    ~BasicCoroutine()
+    {
+        this->destory();
+    }
+
+    bool done()const
+    {
+        if (m_handle != nullptr)
+            return handle.done();
         else
+            return true;
+    }
+
+    void resume()const
+    {
+        if (m_handle != nullptr)
+            handle.resume();
+    }
+
+    void destory()
+    {
+        if (m_handle != nullptr)
         {
-            m_yield_value = new T_yield_type(value);
+            this->m_handle.destroy();
+            m_handle = nullptr;
         }
     }
 
-    virtual void OnReturn()
+    bool operator==(const BasicCoroutine& right)const
     {
-                
+        return this->handle == right.handle;
+    }
+
+    bool operator==(nullptr_t)const
+    {
+        return m_handle == nullptr;
+    }
+
+    _declspec(property(get = gethandle)) const HandleType& handle;
+    const HandleType& gethandle()const
+    {
+        return m_handle;
     }
 
     _declspec(property(get = getyield)) const T_yield_type* yield_value_ptr;
     const T_yield_type* getyield()const
     {
-        return this->m_yield_value;
+        return this->handle.promise().yield_value_ptr;
     }
-
-private:
-    T_yield_type* m_yield_value = nullptr;
-};
-
-virtual ~BasicCoroutine()
-{
-
-}
-
-bool done()const
-{
-    return handle.done();
-}
-
-void resume()const
-{
-    handle.resume();
-}
-
-void destory()const
-{
-    this->handle.destroy();
-}
-
-bool operator==(const BasicCoroutine& right)const
-{
-    return this->handle == right.handle;
-}
-
-std::coroutine_handle<promise_type> handle;
-
-_declspec(property(get = getyield)) const T_yield_type* yield_value_ptr;
-const T_yield_type* getyield()const
-{
-    return this->handle.promise().yield_value_ptr;
-}
 };
 
 
@@ -411,78 +495,104 @@ const T_yield_type* getyield()const
 //模板特化,无co_yield
 template<class Tco_return, class T_initial_await, class T_final_await,class T_yield_await>
 requires    SatisfyAwait<T_initial_await>&&
-            SatisfyAwait<T_final_await>&&
-            SatisfyAwait<T_yield_await>
-class BasicCoroutine<Tco_return, void, T_initial_await, T_final_await,T_yield_await>
+SatisfyAwait<T_final_await>&&
+SatisfyAwait<T_yield_await>
+class BasicCoroutine<Tco_return, void, T_initial_await, T_final_await, T_yield_await>
 {
-friend struct BasicCoroutine::promise_type;
+    friend struct BasicCoroutine::promise_type;
 public:
 
-using T_return_type = Tco_return;
+    using T_return_type = Tco_return;
 
-struct promise_type : promise_type_base<Tco_return, void, T_initial_await, T_final_await, T_yield_await>
-{
-    using Base = promise_type;
-
-    promise_type() {}
-
-    ~promise_type()
+    struct promise_type : promise_type_base<Tco_return, void, T_initial_await, T_final_await, T_yield_await>
     {
-        delete m_return_value;
+        using Base = promise_type;
+
+        promise_type() {}
+
+        ~promise_type()
+        {
+            delete m_return_value;
+        }
+
+        void return_value(const T_return_type& value)
+        {
+            this->OnReturn(value);
+        }
+
+        virtual void OnReturn(const T_return_type& value)
+        {
+            m_return_value = new T_return_type(value);
+        }
+
+        _declspec(property(get = getreturn)) const T_return_type* return_value_ptr;
+        const T_return_type* getreturn()const
+        {
+            return this->m_return_value;
+        }
+
+    private:
+        T_return_type* m_return_value = nullptr;
+    };
+
+    using HandleType = std::coroutine_handle<promise_type>;
+
+private:
+    friend class SharedCoroHandle<BasicCoroutine>;
+    friend struct promise_type_base<Tco_return, void, T_initial_await, T_final_await, T_yield_await>;
+    HandleType m_handle;
+
+public:
+
+    ~BasicCoroutine()
+    {
+        this->destory();
     }
 
-    void return_value(const T_return_type& value)
+    bool done()const
     {
-        this->OnReturn(value);
+        if (m_handle != nullptr)
+            return handle.done();
+        else
+            return true;
     }
 
-    virtual void OnReturn(const T_return_type& value)
+    void resume()const
     {
-        m_return_value = new T_return_type(value);
+        if (m_handle != nullptr)
+            handle.resume();
+    }
+
+    void destory()
+    {
+        if (m_handle != nullptr)
+        {
+            this->m_handle.destroy();
+            m_handle = nullptr;
+        }
+    }
+
+    bool operator==(const BasicCoroutine& right)const
+    {
+        return this->handle == right.handle;
+    }
+
+    bool operator==(nullptr_t)const
+    {
+        return m_handle == nullptr;
+    }
+
+    _declspec(property(get = gethandle)) const HandleType& handle;
+    const HandleType& gethandle()const
+    {
+        return m_handle;
     }
 
     _declspec(property(get = getreturn)) const T_return_type* return_value_ptr;
     const T_return_type* getreturn()const
     {
-        return this->m_return_value;
+        return this->handle.promise().return_value_ptr;
     }
-
-private:
-    T_return_type* m_return_value = nullptr;
-};
-
-virtual ~BasicCoroutine()
-{
-
-}
-
-bool done()const
-{
-    return handle.done();
-}
-
-void resume()const
-{
-    handle.resume();
-}
-
-void destory()const
-{
-    this->handle.destroy();
-}
-
-bool operator==(const BasicCoroutine& right)const
-{
-    return this->handle == right.handle;
-}
-
-std::coroutine_handle<promise_type> handle;
-
-_declspec(property(get = getreturn)) const T_return_type* return_value_ptr;
-const T_return_type* getreturn()const
-{
-    return this->handle.promise().return_value_ptr;
-}
 };
 
 }
@@ -491,130 +601,144 @@ namespace MyCodes
 {
 using DefaultCoroutine = BasicCoroutine<>;
 
-template<class CoroutineType>
-class SharedCoHandle;
-
-template<class CoroutineType>
-SharedCoHandle<CoroutineType> MakeSharedCoroHandle(CoroutineType(*getCorFun)());
-
 //共享协程句柄,机制类似于共享指针,负责自动管理协程的销毁
 //如果协程设置为结束时自动销毁,那么使用共享句柄时,
 //无法判断协程是否已经由于结束而销毁,可能导致异常
 template<class CoroutineType>
-class SharedCoHandle
+class SharedCoroHandle
 {
 public:
-using promise_type = typename CoroutineType::promise_type;
-using HandleType = std::coroutine_handle<promise_type>;
+    using promise_type = typename CoroutineType::promise_type;
+    using HandleType = std::coroutine_handle<promise_type>;
+    
+    SharedCoroHandle(const SharedCoroHandle& right)
+    {
+        times = right.times;
+        m_handle = right.m_handle;
+        (*times)++;
+    }
 
-SharedCoHandle() = delete;  //禁止默认构造
+    SharedCoroHandle(const CoroutineType& coro)
+    {
+        times = new int(1);
+        this->m_handle = coro.m_handle;
+    }
 
-SharedCoHandle(const SharedCoHandle& right)
-{
-    times = right.times;
-    m_handle = right.m_handle;
-    (*times)++;
-}
+    SharedCoroHandle(CoroutineType&& coro)
+    {
+        times = new int(1);
+        this->m_handle = coro.m_handle;
+        coro.m_handle = nullptr;
+    }
+    
+    ~SharedCoroHandle()
+    {
+        if (times == nullptr)
+            return;
+    
+        (*times)--;
+        if (*times <= 0)
+        {
+            Destroy();
+        }
+    }
+    
+    const promise_type* operator->()const
+    {
+        return &m_handle.promise();
+    }
+    
+    const SharedCoroHandle& operator=(const SharedCoroHandle& right)
+    {
+        this->~SharedCoroHandle();
+        times = right.times;
+        m_handle = right.m_handle;
+        (*times)++;
+        return *this;
+    }
 
-SharedCoHandle(const SharedCoHandle&& right)
-{
-    times = right.times;
-    m_handle = right.m_handle;
-    (*times)++;
-}
+    const SharedCoroHandle& operator=(const CoroutineType& coro)
+    {
+        this->~SharedCoroHandle();
+        times = new int(1);
+        this->m_handle = coro.m_handle;
+        return *this;
+    }
 
-~SharedCoHandle()
-{
-    if (times == nullptr)
-        return;
+    const SharedCoroHandle& operator=(CoroutineType&& coro)
+    {
+        this->~SharedCoroHandle();
+        times = new int(1);
+        this->m_handle = coro.m_handle;
+        coro.m_handle = nullptr;
+        return *this;
+    }
+    
+    const bool operator==(const SharedCoroHandle& right)const
+    {
+        return this->m_handle == right.m_handle;
+    }
+    
+    bool done()const
+    {
+        return m_handle.done();
+    }
+    
+    void resume()const
+    {
+        m_handle.resume();
+    }
+    
+    bool try_resume()const
+    {
+        if (!m_handle.done())
+        {
+            m_handle.resume();
+            return true;
+        }
+        else
+            return false;
+    }
+    
+    _declspec(property(get = gethandle)) const HandleType& handle;
+    const HandleType& gethandle()const
+    {
+        return this->m_handle;
+    }
 
-    (*times)--;
-    if (*times <= 0)
+private:
+
+    SharedCoroHandle() = default;
+
+    void Destroy()
     {
         delete times;
         m_handle.destroy();
     }
-}
 
-const promise_type* operator->()const
-{
-    return &m_handle.promise();
-}
-
-const SharedCoHandle& operator=(const SharedCoHandle& right)
-{
-    this->~SharedCoHandle();
-    times = right.times;
-    m_handle = right.m_handle;
-    (*times)++;
-    return *this;
-}
-
-const SharedCoHandle& operator=(const SharedCoHandle&& right)
-{
-    this->~SharedCoHandle();
-    times = right.times;
-    m_handle = right.m_handle;
-    (*times)++;
-    return *this;
-}
-
-const bool operator==(const SharedCoHandle& right)const
-{
-    return this->m_handle == right.m_handle;
-}
-
-const bool operator==(const SharedCoHandle&& right)const
-{
-    return this->m_handle == right.m_handle;
-}
-
-bool done()const
-{
-    return m_handle.done();
-}
-
-void resume()const
-{
-    m_handle.resume();
-}
-
-bool try_resume()const
-{
-    if (!m_handle.done())
-    {
-        m_handle.resume();
-        return true;
-    }
-    else
-        return false;
-}
-
-_declspec(property(get = gethandle)) const HandleType& handle;
-const HandleType& gethandle()const
-{
-    return this->m_handle;
-}
-
-private:
-friend SharedCoHandle<CoroutineType> MakeSharedCoroHandle<CoroutineType>(CoroutineType(*getCorFun)());
-SharedCoHandle(const HandleType handle)
-{
-    times = new int(1);
-    this->m_handle = handle;
-}
-
-int* times=nullptr;
-HandleType m_handle;
+    int* times=nullptr;
+    HandleType m_handle;
 };
 
+    template<class CoroutineType,class... T>
+    SharedCoroHandle<CoroutineType> MakeSharedCoroHandle(
+    CoroutineType(*getCoroFun)(const T...),
+    T... parm)
+    {
+        return SharedCoroHandle<CoroutineType>(getCoroFun(parm...));
+    }
 
-template<class CoroutineType>
-SharedCoHandle<CoroutineType> MakeSharedCoroHandle(CoroutineType(*getCorFun)())
-{
-auto thecor = getCorFun();
-return SharedCoHandle<CoroutineType>(thecor.handle);
-}
+    template<class CoroutineType>
+    SharedCoroHandle<CoroutineType> MakeSharedCoroHandle(const CoroutineType& coro)
+    {
+        return SharedCoroHandle<CoroutineType>(coro);
+    }
+
+    template<class CoroutineType>
+    SharedCoroHandle<CoroutineType> MakeSharedCoroHandle(CoroutineType&& coro)
+    {
+        return SharedCoroHandle<CoroutineType>(move(coro));
+    }
 }
 
 #endif
