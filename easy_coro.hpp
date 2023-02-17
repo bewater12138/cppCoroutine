@@ -27,16 +27,54 @@
     为了方便地管理协程句柄，本库中根据共享指针的机制提供了共享协程句柄，SharedCoroHandle
 类，以便程序自动管理协程的销毁。创建时建议通过 MakeSharedCoroHandle 函数创建。
 
+    使用示例：
+        BasicCoroutine<void, int> getcoro(int number)
+        {
+            std::cout << number << ":" << "第一次调用\n";
+            co_yield 10;
+            std::cout << number << ":" << "第二次调用\n";
+            CO_AWAIT;
+            std::cout << number << ":" << "第三次调用\n";
+            co_yield 20;
+            std::cout << number << ":" << "第四次调用\n";
+            co_return;
+        }
+
+        int main()
+        {
+            auto h = MakeSharedCoroHandle(getcoro,5);
+            auto h2 = MakeSharedCoroHandle(getcoro(5)); //两种方式都可以产生共享句柄
+            auto h3 = getcoro(5);   // h3 是普通句柄，析构时会直接销毁协程
+
+            while (!h.done())
+            {
+                h.try_resume();
+                std::cout << *h->yield_value_ptr << std::endl;
+            }
+            std::cout << "协程结束\n";
+
+            system("pause");
+            return 0;
+        }
+
+    输出结果：
+        5:第一次调用
+        10
+        5:第二次调用
+        10
+        5:第三次调用
+        20
+        5:第四次调用
+        20
+        协程结束
+
 */
 #pragma once
 #if _MSVC_LANG > 201703L
 #include<coroutine>
 
-#define _AWAIT std::suspend_always()
-#define _CONTINUE std::suspend_never()
-
-#define CO_AWAIT co_await _AWAIT
-#define CO_CONTINUE co_await _CONTINUE
+#define CO_AWAIT co_await std::suspend_always()
+#define CO_CONTINUE co_await std::suspend_never()
 
 #define OVERRIDE_ON_RETURN_VOID virtual void OnReturn()override
 #define OVERRIDE_ON_RETURN virtual void OnReturn(const return_type& value)override
@@ -49,87 +87,87 @@
 
 namespace MyCodes
 {
-template<class T>
-concept Await = requires(T t,bool resault)
-{
-resault = t.await_ready();
-&T::await_suspend;
-t.await_resume();
-};
+    template<class T>
+    concept Await = requires(std::coroutine_handle<> h,T t, bool resault)
+    {
+        resault = t.await_ready();
+        t.await_suspend(h);
+        t.await_resume();
+    };
 
-template<   class Tco_return,
-            class Tco_yield,
+    template<   class Tco_return,
+        class Tco_yield,
         Await T_initial_await,
         Await T_final_await,
         Await T_yield_await>
-class BasicCoroutine;       //前置声明
+    class BasicCoroutine;       //前置声明
 
-template<   class Tco_return,
-            class Tco_yield,
+    template<   class Tco_return,
+        class Tco_yield,
         Await T_initial_await,
         Await T_final_await,
         Await T_yield_await>
-struct promise_type_base
-{
-    promise_type_base() {}
-
-    using CoroType =
-        BasicCoroutine<Tco_return, Tco_yield, T_initial_await, T_final_await, T_yield_await>;
-
-    CoroType get_return_object()
+    struct promise_type_base
     {
-        this->OnGetObject();
-        
-        unsigned char buffer[sizeof(CoroType)]{ 0 };
-        CoroType* coro_ptr = reinterpret_cast<CoroType*>(buffer);  //防止自动调用析构函数
-        coro_ptr->m_handle = std::coroutine_handle<typename CoroType::promise_type>::
-            from_promise(*
-                (reinterpret_cast<typename CoroType::promise_type*>(this))
-            );
+        promise_type_base() {}
 
-        return *coro_ptr;
-    }
+        using CoroType =
+            BasicCoroutine<Tco_return, Tco_yield, T_initial_await, T_final_await, T_yield_await>;
 
-    T_initial_await initial_suspend()
-    {
-        this->OnInitial();
-        return {};
-    }
+        CoroType get_return_object()
+        {
+            this->OnGetObject();
 
-    T_final_await final_suspend()noexcept
-    {
-        this->OnFinal();
-        return {};
-    }
+            unsigned char buffer[sizeof(CoroType)]{ 0 };
+            CoroType* coro_ptr = reinterpret_cast<CoroType*>(buffer);  //防止自动调用析构函数
+            coro_ptr->m_handle = std::coroutine_handle<typename CoroType::promise_type>::
+                from_promise(*
+                    (reinterpret_cast<typename CoroType::promise_type*>(this))
+                );
 
-    void unhandled_exception()
-    {
-        this->OnUnhandledException();
-    }
+            return *coro_ptr;
+        }
 
-    virtual void OnGetObject()
-    {
+        T_initial_await initial_suspend()
+        {
+            this->OnInitial();
+            return {};
+        }
 
-    }
+        T_final_await final_suspend()noexcept
+        {
+            this->OnFinal();
+            return {};
+        }
 
-    virtual void OnInitial()
-    {
+        void unhandled_exception()
+        {
+            this->OnUnhandledException();
+        }
 
-    }
+        virtual void OnGetObject()
+        {
 
-    virtual void OnFinal()noexcept
-    {
+        }
 
-    }
+        virtual void OnInitial()
+        {
 
-    virtual void OnUnhandledException()
-    {
+        }
 
-    }
-};
+        virtual void OnFinal()noexcept
+        {
 
-template<class CoroutineType>
-class SharedCoroHandle;     //前置声明
+        }
+
+        virtual void OnUnhandledException()
+        {
+
+        }
+    };
+
+    template<class CoroutineType>
+    class SharedCoroHandle;     //前置声明
 
 #pragma region BasicCoroutine_CommonFuncs
 
@@ -168,13 +206,14 @@ bool operator==(nullptr_t)const\
 }
 
 #pragma endregion
+
 }
 
 namespace MyCodes
 {
     //协程模板,Tco_return是co_return的返回值类型,
     //Tco_yield是co_yield的返回类型
-    //T_pt的三个模板参数是满足await_ready条件的类型，用来判断各种情况下是否挂起协程
+    //Await 约束的三个模板参数是满足await_ready条件的类型，用来判断各种情况下是否挂起协程
     //默认为std::suspend_always,即总是在这些时候挂起
     template<   class Tco_return    = void,
                 class Tco_yield     = void,
@@ -560,16 +599,22 @@ namespace MyCodes
     
         bool done()const
         {
+            if (m_handle == nullptr)
+                return true;
             return m_handle.done();
         }
     
         void resume()const
         {
-            m_handle.resume();
+            if (m_handle != nullptr)
+                m_handle.resume();
         }
     
         bool try_resume()const
         {
+            if (m_handle == nullptr)
+                return false;
+
             if (!m_handle.done())
             {
                 m_handle.resume();
@@ -602,7 +647,7 @@ namespace MyCodes
     SharedCoroHandle<CoroutineType> 
         MakeSharedCoroHandle(
             CoroutineType(*getCoroFun)(const T...),
-            T... parm)
+            const T&... parm)
     {
         return SharedCoroHandle<CoroutineType>(getCoroFun(parm...));
     }
